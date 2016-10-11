@@ -38,6 +38,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "../common/execute.h"
 #include "../common/MProcess.h"
 #include "../common/MProcessBits.h"
+#include "../common/MRect.h"
 #include "../common/MSectionSimple.h"
 #include "../common/MStrDup.h"
 #include "../common/MStrSafe.h"
@@ -2304,6 +2305,13 @@ void SetConEmuWindows(HWND hRootWnd, HWND hDcWnd, HWND hBackWnd)
 	{
 		_wsprintfA(szInfo+lstrlenA(szInfo), SKIPLEN(30) "ConEmuWnd=x%08X ", (DWORD)(DWORD_PTR)hRootWnd);
 		ghConEmuWnd = hRootWnd;
+
+		// Than check GuiPID
+		DWORD nGuiPid = 0;
+		if (GetWindowThreadProcessId(hRootWnd, &nGuiPid) && nGuiPid)
+		{
+			gnConEmuPID = nGuiPid;
+		}
 	}
 	// Do AllowSetForegroundWindow
 	if (hRootWnd)
@@ -2508,14 +2516,9 @@ bool TryConnect2Gui(HWND hGui, DWORD anGuiPID, CESERVER_REQ* pIn)
 			}
 		}
 
-		MY_CONSOLE_SCREEN_BUFFER_INFOEX sbi_ex = {sizeof(sbi_ex)};
-		if ((pIn->StartStop.bPalletteLoaded = apiGetConsoleScreenBufferInfoEx((HANDLE)ghConOut, &sbi_ex)))
-		{
-			_ASSERTE(sizeof(pIn->StartStop.ColorTable) == sizeof(sbi_ex.ColorTable));
-			pIn->StartStop.wAttributes = sbi_ex.wAttributes;
-			pIn->StartStop.wPopupAttributes = sbi_ex.wPopupAttributes;
-			memmove(pIn->StartStop.ColorTable, sbi_ex.ColorTable, sizeof(pIn->StartStop.ColorTable));
-		}
+		// Palette may revive after detach from ConEmu
+		MyLoadConsolePalette((HANDLE)ghConOut, pIn->StartStop.Palette);
+
 	}
 	else
 	{
@@ -2611,6 +2614,11 @@ bool TryConnect2Gui(HWND hGui, DWORD anGuiPID, CESERVER_REQ* pIn)
 
 	SetEnvironmentVariable(ENV_CONEMU_TASKNAME_W, pStartStopRet->TaskName.Demangle());
 	SetEnvironmentVariable(ENV_CONEMU_PALETTENAME_W, pStartStopRet->PaletteName.Demangle());
+
+	if (pStartStopRet->Palette.bPalletteLoaded)
+	{
+		gpSrv->ConsolePalette = pStartStopRet->Palette;
+	}
 
 	// Also calls SetConEmuEnvVar
 	SetConEmuWindows(pStartStopRet->Info.hWnd, pStartStopRet->Info.hWndDc, pStartStopRet->Info.hWndBack);
@@ -3333,10 +3341,8 @@ int CreateMapHeader()
 	}
 
 
-	//WARNING! В начале структуры info идет CESERVER_REQ_HDR для унификации общения через пайпы
-	gpSrv->pConsole->info.cmd.cbSize = sizeof(gpSrv->pConsole->info); // Пока тут - только размер заголовка
-	gpSrv->pConsole->info.hConWnd = ghConWnd; _ASSERTE(ghConWnd!=NULL);
-	gpSrv->pConsole->info.crMaxSize = crMax;
+	gpSrv->pConsole->ConState.hConWnd = ghConWnd; _ASSERTE(ghConWnd!=NULL);
+	gpSrv->pConsole->ConState.crMaxSize = crMax;
 
 	// Проверять, нужно ли реестр хукать, будем в конце ServerInit
 
@@ -3850,11 +3856,11 @@ static int ReadConsoleInfo()
 
 	if (!apiGetConsoleSelectionInfo(&lsel))
 	{
-		SetConEmuFlags(gpSrv->pConsole->info.Flags,CECI_Paused,(CECI_None));
+		SetConEmuFlags(gpSrv->pConsole->ConState.Flags,CECI_Paused,(CECI_None));
 	}
 	else
 	{
-		SetConEmuFlags(gpSrv->pConsole->info.Flags,CECI_Paused,((lsel.dwFlags & CONSOLE_SELECTION_IN_PROGRESS) ? CECI_Paused : CECI_None));
+		SetConEmuFlags(gpSrv->pConsole->ConState.Flags,CECI_Paused,((lsel.dwFlags & CONSOLE_SELECTION_IN_PROGRESS) ? CECI_Paused : CECI_None));
 	}
 
 	if (!GetConsoleCursorInfo(hOut, &lci))
@@ -4055,20 +4061,21 @@ static int ReadConsoleInfo()
 	}
 
 	// Лучше всегда делать, чтобы данные были гарантированно актуальные
-	gpSrv->pConsole->hdr.hConWnd = gpSrv->pConsole->info.hConWnd = ghConWnd;
+	gpSrv->pConsole->hdr.hConWnd = gpSrv->pConsole->ConState.hConWnd = ghConWnd;
 	_ASSERTE(gpSrv->dwMainServerPID!=0);
 	gpSrv->pConsole->hdr.nServerPID = gpSrv->dwMainServerPID;
 	gpSrv->pConsole->hdr.nAltServerPID = (gnRunMode==RM_ALTSERVER) ? GetCurrentProcessId() : gpSrv->dwAltServerPID;
 	//gpSrv->pConsole->info.nInputTID = gpSrv->dwInputThreadId;
-	gpSrv->pConsole->info.nReserved0 = 0;
-	gpSrv->pConsole->info.dwCiSize = sizeof(gpSrv->ci);
-	gpSrv->pConsole->info.ci = gpSrv->ci;
-	gpSrv->pConsole->info.dwConsoleCP = gpSrv->dwConsoleCP;
-	gpSrv->pConsole->info.dwConsoleOutputCP = gpSrv->dwConsoleOutputCP;
-	gpSrv->pConsole->info.dwConsoleInMode = gpSrv->dwConsoleInMode;
-	gpSrv->pConsole->info.dwConsoleOutMode = gpSrv->dwConsoleOutMode;
-	gpSrv->pConsole->info.dwSbiSize = sizeof(gpSrv->sbi);
-	gpSrv->pConsole->info.sbi = gpSrv->sbi;
+	gpSrv->pConsole->ConState.nReserved0 = 0;
+	gpSrv->pConsole->ConState.dwCiSize = sizeof(gpSrv->ci);
+	gpSrv->pConsole->ConState.ci = gpSrv->ci;
+	gpSrv->pConsole->ConState.dwConsoleCP = gpSrv->dwConsoleCP;
+	gpSrv->pConsole->ConState.dwConsoleOutputCP = gpSrv->dwConsoleOutputCP;
+	gpSrv->pConsole->ConState.dwConsoleInMode = gpSrv->dwConsoleInMode;
+	gpSrv->pConsole->ConState.dwConsoleOutMode = gpSrv->dwConsoleOutMode;
+	gpSrv->pConsole->ConState.dwSbiSize = sizeof(gpSrv->sbi);
+	gpSrv->pConsole->ConState.sbi = gpSrv->sbi;
+	gpSrv->pConsole->ConState.ConsolePalette = gpSrv->ConsolePalette;
 
 
 	// Если есть возможность (WinXP+) - получим реальный список процессов из консоли
@@ -4082,13 +4089,13 @@ static int ReadConsoleInfo()
 	}
 	#endif
 
-	DWORD nCurProcCount = GetProcessCount(gpSrv->pConsole->info.nProcesses, countof(gpSrv->pConsole->info.nProcesses));
-	_ASSERTE(nCurProcCount && gpSrv->pConsole->info.nProcesses[0]);
+	DWORD nCurProcCount = GetProcessCount(gpSrv->pConsole->ConState.nProcesses, countof(gpSrv->pConsole->ConState.nProcesses));
+	_ASSERTE(nCurProcCount && gpSrv->pConsole->ConState.nProcesses[0]);
 	if (nCurProcCount
-		&& memcmp(gpSrv->nLastRetProcesses, gpSrv->pConsole->info.nProcesses, sizeof(gpSrv->nLastRetProcesses)))
+		&& memcmp(gpSrv->nLastRetProcesses, gpSrv->pConsole->ConState.nProcesses, sizeof(gpSrv->nLastRetProcesses)))
 	{
 		// Process list was changed
-		memmove(gpSrv->nLastRetProcesses, gpSrv->pConsole->info.nProcesses, sizeof(gpSrv->nLastRetProcesses));
+		memmove(gpSrv->nLastRetProcesses, gpSrv->pConsole->ConState.nProcesses, sizeof(gpSrv->nLastRetProcesses));
 		lbChanged = TRUE;
 	}
 
@@ -4185,7 +4192,7 @@ static BOOL ReadConsoleData()
 		_wsprintfA(sFailedInfo, SKIPLEN(countof(sFailedInfo)) "ReadConsoleData FAIL: MaxSize(%u) < CurSize(%u), TextSize(%ux%u)", gpSrv->pConsole->cbMaxSize, (nCurSize+nHdrSize), TextWidth, TextHeight);
 		LogString(sFailedInfo);
 
-		TextHeight = (gpSrv->pConsole->info.crMaxSize.X * gpSrv->pConsole->info.crMaxSize.Y - (TextWidth-1)) / TextWidth;
+		TextHeight = (gpSrv->pConsole->ConState.crMaxSize.X * gpSrv->pConsole->ConState.crMaxSize.Y - (TextWidth-1)) / TextWidth;
 
 		if (TextHeight <= 0)
 		{
@@ -4205,9 +4212,9 @@ static BOOL ReadConsoleData()
 		//_ASSERTE(gpSrv->nConsoleDataSize >= (nCurSize+nHdrSize));
 	}
 
-	gpSrv->pConsole->info.crWindow.X = TextWidth; gpSrv->pConsole->info.crWindow.Y = TextHeight;
+	gpSrv->pConsole->ConState.crWindow = MakeCoord(TextWidth, TextHeight);
 
-	gpSrv->pConsole->info.sbi.srWindow = rgn;
+	gpSrv->pConsole->ConState.sbi.srWindow = rgn;
 
 	hOut = (HANDLE)ghConOut;
 
@@ -4317,7 +4324,7 @@ BOOL ReloadFullConsoleInfo(BOOL abForceSend)
 	}
 
 #ifdef _DEBUG
-	DWORD nPacketID = gpSrv->pConsole->info.nPacketId;
+	DWORD nPacketID = gpSrv->pConsole->ConState.nPacketId;
 #endif
 
 #ifdef USE_COMMIT_EVENT
@@ -4376,8 +4383,8 @@ BOOL ReloadFullConsoleInfo(BOOL abForceSend)
 			// Накрутить счетчик и Tick
 			//gpSrv->pConsole->bChanged = TRUE;
 			//if (lbDataChanged)
-			gpSrv->pConsole->info.nPacketId++;
-			gpSrv->pConsole->info.nSrvUpdateTick = GetTickCount();
+			gpSrv->pConsole->ConState.nPacketId++;
+			gpSrv->pConsole->ConState.nSrvUpdateTick = GetTickCount();
 
 			if (gpSrv->hDataReadyEvent)
 				SetEvent(gpSrv->hDataReadyEvent);
@@ -4479,6 +4486,60 @@ void ShowSleepIndicator(SleepIndicatorType SleepType, bool bSleeping)
 }
 
 
+bool FreezeRefreshThread()
+{
+	MSectionLockSimple csControl;
+	csControl.Lock(&gpSrv->csRefreshControl, LOCK_REFRESH_CONTROL_TIMEOUT);
+	if (!gpSrv->hFreezeRefreshThread)
+		gpSrv->hFreezeRefreshThread = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+	if (GetCurrentThreadId() == gpSrv->dwRefreshThread)
+	{
+		_ASSERTE(GetCurrentThreadId() != gpSrv->dwRefreshThread);
+		return false;
+	}
+	
+	gpSrv->nRefreshFreezeRequests++;
+	ResetEvent(gpSrv->hFreezeRefreshThread);
+
+	csControl.Unlock();
+
+	// wait while refresh thread becomes freezed
+	DWORD nStartTick = GetTickCount(), nCurTick = 0; //TODO: replace with service class
+	DWORD nWait = (DWORD)-1;
+	HANDLE hWait[] = {gpSrv->hRefreshThread, ghQuitEvent};
+	while (gpSrv->hRefreshThread && (gpSrv->nRefreshIsFreezed <= 0))
+	{
+		nWait = WaitForMultipleObjects(countof(hWait), hWait, FALSE, 100);
+		if ((nWait == WAIT_OBJECT_0) || (nWait == (WAIT_OBJECT_0+1)))
+			break;
+		if (((nCurTick = GetTickCount()) - nStartTick) > LOCK_REFRESH_CONTROL_TIMEOUT)
+			break;
+	}
+
+	return (gpSrv->nRefreshIsFreezed > 0) || (gpSrv->hRefreshThread == NULL);
+}
+
+bool ThawRefreshThread()
+{
+	MSectionLockSimple csControl;
+	csControl.Lock(&gpSrv->csRefreshControl, LOCK_REFRESH_CONTROL_TIMEOUT);
+
+	if (gpSrv->nRefreshFreezeRequests > 0)
+	{
+		gpSrv->nRefreshFreezeRequests--;
+	}
+	else
+	{
+		_ASSERTE(FALSE && "Unbalanced FreezeRefreshThread/ThawRefreshThread calls");
+	}
+
+	// decrease counter, if == 0 thaw the thread
+	if (gpSrv->hFreezeRefreshThread && (gpSrv->nRefreshFreezeRequests == 0))
+		SetEvent(gpSrv->hFreezeRefreshThread);
+
+	return (gpSrv->nRefreshFreezeRequests == 0);
+}
 
 
 DWORD WINAPI RefreshThread(LPVOID lpvParam)
@@ -4525,13 +4586,17 @@ DWORD WINAPI RefreshThread(LPVOID lpvParam)
 		//lbForceSend = FALSE;
 		MCHKHEAP;
 
+
 		if (gpSrv->hFreezeRefreshThread)
 		{
 			HANDLE hFreeze[2] = {gpSrv->hFreezeRefreshThread, ghQuitEvent};
+			InterlockedIncrement(&gpSrv->nRefreshIsFreezed);
 			nFreezeWait = WaitForMultipleObjects(countof(hFreeze), hFreeze, FALSE, INFINITE);
+			InterlockedDecrement(&gpSrv->nRefreshIsFreezed);
 			if (nFreezeWait == (WAIT_OBJECT_0+1))
 				break; // затребовано завершение потока
 		}
+
 
 		if (gpSrv->hWaitForSetConBufThread)
 		{

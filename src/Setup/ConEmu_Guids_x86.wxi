@@ -74,6 +74,7 @@
 	<?define Guid.ConEmuInside.reg = "DCCA7E45-6FC3-48C4-852F-A178550954A5" ?>
 	<?define Guid.ConEmuInsideUninstall.reg = "03978C0D-C502-40AA-BECF-C7E853252196" ?>
 
+	<?define Guid.CtrlNumber.lua3 = "055D605B-7BC6-4E84-A9BC-18921E2E3888" ?>
 	<?define Guid.CtrlO.lua3 = "B0AD7E8D-9C41-4420-A2F8-2B94F7D18A6C" ?>
 	<?define Guid.CtrlShiftT.lua3 = "4CA1CAF6-E314-4400-A916-30C1F9E5E464" ?>
 	<?define Guid.ShiftEnter.lua3 = "19995D8F-0DFD-4962-9AC0-41B9359CF047" ?>
@@ -131,6 +132,7 @@
 	<?define Guid.CallPlugin.txt = "E59E49D3-541B-489A-B46D-F0915397A3F7" ?>
 	<?define Guid.RevokeMouseInput.ps1 = "76B9E76D-6367-46EB-BD7E-5C4EF2DB669D" ?>
 	<?define Guid.utf_8_test.cmd = "DC6442DC-E399-4C77-80C4-C36C50A73D2A" ?>
+	<?define Guid.wsl_con.cmd = "ABB7E80E-C443-4C3C-A865-7A2F51C083F7" ?>
 	
 	<?define Guid.AnsiColors16.ans = "D0B94B0D-E1C4-4CD4-9E6B-5AD30BD299D6" ?>
 	<?define Guid.AnsiColors16t.ans = "590BFE53-BB03-492B-A713-82AD42C682C9" ?>

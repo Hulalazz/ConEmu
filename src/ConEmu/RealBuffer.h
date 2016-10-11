@@ -213,7 +213,7 @@ public:
 	const CRgnDetect* GetDetector();
 
 private:
-	void ApplyConsoleInfo(const CESERVER_REQ_CONINFO_INFO* pInfo, bool& bSetApplyFinished, bool& lbChanged, bool& bBufRecreate);
+	void ApplyConsoleInfo(const CESERVER_REQ* pInfo, bool& bSetApplyFinished, bool& lbChanged, bool& bBufRecreate);
 	bool SetConsoleSizeSrv(USHORT sizeX, USHORT sizeY, USHORT sizeBuffer, DWORD anCmdID = CECMD_SETSIZESYNC);
 	bool InitBuffers(DWORD anCellCount = 0, int anWidth = 0, int anHeight = 0, CRConDataGuard* pData = NULL);
 	bool InitBuffers(CRConDataGuard* pData);
@@ -309,6 +309,7 @@ protected:
 	MSectionSimple mcs_Data;
 	CRConDataGuard m_ConData;
 	bool GetData(CRConDataGuard& data);
+	bool isDataValid();
 
 
 	bool SetTopLeft(int ay = -1, int ax = -1, bool abServerCall = false);

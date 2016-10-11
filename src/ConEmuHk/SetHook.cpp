@@ -130,9 +130,6 @@ HMODULE* ghSysDll[] = {
 
 // Forwards
 
-bool InitHooksCommon();
-bool InitHooksDefTerm();
-
 void LogModuleLoaded(LPCWSTR pwszModule, HMODULE hModule);
 void LogModuleUnloaded(LPCWSTR pwszModule, HMODULE hModule);
 
@@ -419,7 +416,8 @@ void* __cdecl GetOriginalAddress(void* OurFunction, DWORD nFnID /*= 0*/, void* A
 	}
 
 	// That is strange. Try to find via pointer
-	_ASSERTE(abAllowNulls && "Function index was not detected");
+	// gh-888: Due AllocConsole from DefTerm (GUI app) only limited list of functions may be hooked
+	_ASSERTE((abAllowNulls || gbPrepareDefaultTerminal) && "Function index was not detected");
 	for (int i = 0; gpHooks[i].NewAddress; i++)
 	{
 		if (gpHooks[i].NewAddress == OurFunction)
@@ -437,15 +435,17 @@ wrap:
 	// Not yet hooked?
 	if (!lpfn && !abAllowNulls && ApiFunction)
 	{
-		if (!HooksWereSet)
+		#ifdef _DEBUG
+		if (HooksWereSet)
 		{
-			if (ph) *ph = NULL;
-			lpfn = ApiFunction;
+			static bool asserted = false;
+			_ASSERT(asserted && "The function was not hooked before");
+			if (gbPrepareDefaultTerminal)
+				asserted = true;
 		}
-		else
-		{
-			_ASSERT(!HooksWereSet);
-		}
+		#endif
+		if (ph) *ph = NULL;
+		lpfn = ApiFunction;
 	}
 
 	_ASSERT(lpfn || (!HooksWereSet || abAllowNulls));
@@ -657,7 +657,7 @@ int InitHooks(HookItem* apHooks)
 			{
 				if (gpHooks[j].NewAddress == apHooks[i].NewAddress)
 				{
-					_ASSERTEX(FALSE && "Function NewAddress is not unique! Skipped!");
+					_ASSERTEX((gnDllState & ds_HooksStarted) && "Function NewAddress is not unique! Skipped!");
 					skip = true; break;
 				}
 
@@ -891,26 +891,12 @@ bool StartupHooks()
 	print_timings(L"SetAllHooks");
 	HLOG1("SetAllHooks",0);
 	bool lbRc = SetAllHooks();
-	if (lbRc)
-	{
-		gnDllState |= ds_HooksStarted;
-
-		//_ASSERTE(FALSE); -- it must TRIGGER OnCreateFileW
-		SetImports(WIN3264TEST(L"ConEmuHk",L"ConEmuHk64"), ghOurModule, TRUE);
-		//_ASSERTE(FALSE); -- it must BYPASS OnCreateFileW and call trampolined function
-	}
-	else
+	if (!lbRc)
 	{
 		gnDllState &= ~ds_HooksStarted;
 		gnDllState |= ds_HooksStartFailed;
 	}
 	HLOGEND1();
-
-	extern FARPROC CallWriteConsoleW;
-	CallWriteConsoleW = (FARPROC)GetOriginalAddress((LPVOID)OnWriteConsoleW, HOOK_FN_ID(WriteConsoleW), NULL, NULL, gbPrepareDefaultTerminal);
-
-	extern GetConsoleWindow_T gfGetRealConsoleWindow; // from ConEmuCheck.cpp
-	gfGetRealConsoleWindow = (GetConsoleWindow_T)GetOriginalAddress((LPVOID)OnGetConsoleWindow, HOOK_FN_ID(GetConsoleWindow), NULL, NULL, gbPrepareDefaultTerminal);
 
 	print_timings(L"SetAllHooks - done");
 
@@ -1691,6 +1677,20 @@ bool SetAllHooks()
 	_ASSERTE(status == MH_OK);
 
 	DebugString(L"SetAllHooks finished\n");
+
+
+	SetImports(WIN3264TEST(L"ConEmuHk",L"ConEmuHk64"), ghOurModule, TRUE);
+
+	DebugString(L"SetImports finished\n");
+
+
+	extern FARPROC CallWriteConsoleW;
+	CallWriteConsoleW = (FARPROC)GetOriginalAddress((LPVOID)OnWriteConsoleW, HOOK_FN_ID(WriteConsoleW), NULL, NULL, gbPrepareDefaultTerminal);
+
+	extern GetConsoleWindow_T gfGetRealConsoleWindow; // from ConEmuCheck.cpp
+	gfGetRealConsoleWindow = (GetConsoleWindow_T)GetOriginalAddress((LPVOID)OnGetConsoleWindow, HOOK_FN_ID(GetConsoleWindow), NULL, NULL, gbPrepareDefaultTerminal);
+
+	DebugString(L"Functions prepared\n");
 
 	return true;
 }

@@ -311,6 +311,59 @@ UINT gnMsgSwitchCon = 0;
 UINT gnMsgHookedKey = 0;
 //UINT gnMsgConsoleHookedKey = 0;
 
+void LoadSrvInfoMap(LPCWSTR pszExeName = NULL, LPCWSTR pszDllName = NULL)
+{
+	if (ghConWnd)
+	{
+		MFileMapping<CESERVER_CONSOLE_MAPPING_HDR> ConInfo;
+		ConInfo.InitName(CECONMAPNAME, LODWORD(ghConWnd)); //-V205
+		CESERVER_CONSOLE_MAPPING_HDR *pInfo = ConInfo.Open();
+		if (pInfo)
+		{
+			if (pInfo->cbSize >= sizeof(CESERVER_CONSOLE_MAPPING_HDR))
+			{
+				if (pInfo->hConEmuRoot && IsWindow(pInfo->hConEmuRoot))
+				{
+					SetConEmuWindows(pInfo->hConEmuRoot, pInfo->hConEmuWndDc, pInfo->hConEmuWndBack);
+				}
+				if (pInfo->nServerPID && pInfo->nServerPID != gnSelfPID)
+				{
+					gnMainServerPID = pInfo->nServerPID;
+					gnAltServerPID = pInfo->nAltServerPID;
+				}
+
+				gbLogProcess = (pInfo->nLoggingType == glt_Processes);
+				if (pszExeName && gbLogProcess)
+				{
+					CEStr lsDir;
+					int ImageBits = 0, ImageSystem = 0;
+					#ifdef _WIN64
+					ImageBits = 64;
+					#else
+					ImageBits = 32;
+					#endif
+					CESERVER_REQ* pIn = ExecuteNewCmdOnCreate(pInfo, ghConWnd, eSrvLoaded,
+						L"", pszExeName, pszDllName, GetDirectory(lsDir), NULL, NULL, NULL, NULL,
+						ImageBits, ImageSystem,
+						GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE));
+					if (pIn)
+					{
+						CESERVER_REQ* pOut = ExecuteGuiCmd(ghConWnd, pIn, ghConWnd);
+						ExecuteFreeResult(pIn);
+						if (pOut) ExecuteFreeResult(pOut);
+					}
+				}
+
+				ConInfo.CloseMap();
+			}
+			else
+			{
+				_ASSERTE(pInfo->cbSize == sizeof(CESERVER_CONSOLE_MAPPING_HDR));
+			}
+		}
+	}
+}
+
 #if defined(__GNUC__)
 extern "C"
 #endif
@@ -400,54 +453,8 @@ BOOL WINAPI DllMain(HINSTANCE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
 			// Открыть мэппинг консоли и попытаться получить HWND GUI, PID сервера, и пр...
 			if (ghConWnd)
-			{
-				MFileMapping<CESERVER_CONSOLE_MAPPING_HDR> ConInfo;
-				ConInfo.InitName(CECONMAPNAME, LODWORD(ghConWnd)); //-V205
-				CESERVER_CONSOLE_MAPPING_HDR *pInfo = ConInfo.Open();
-				if (pInfo)
-				{
-					if (pInfo->cbSize >= sizeof(CESERVER_CONSOLE_MAPPING_HDR))
-					{
-						if (pInfo->hConEmuRoot && IsWindow(pInfo->hConEmuRoot))
-						{
-							SetConEmuWindows(pInfo->hConEmuRoot, pInfo->hConEmuWndDc, pInfo->hConEmuWndBack);
-						}
-						if (pInfo->nServerPID && pInfo->nServerPID != gnSelfPID)
-						{
-							gnMainServerPID = pInfo->nServerPID;
-							gnAltServerPID = pInfo->nAltServerPID;
-						}
+				LoadSrvInfoMap(szExeName, szDllName);
 
-						gbLogProcess = (pInfo->nLoggingType == glt_Processes);
-						if (gbLogProcess)
-						{
-							CEStr lsDir;
-							int ImageBits = 0, ImageSystem = 0;
-							#ifdef _WIN64
-							ImageBits = 64;
-							#else
-							ImageBits = 32;
-							#endif
-							CESERVER_REQ* pIn = ExecuteNewCmdOnCreate(pInfo, ghConWnd, eSrvLoaded,
-								L"", szExeName, szDllName, GetDirectory(lsDir), NULL, NULL, NULL, NULL,
-								ImageBits, ImageSystem,
-								GetStdHandle(STD_INPUT_HANDLE), GetStdHandle(STD_OUTPUT_HANDLE), GetStdHandle(STD_ERROR_HANDLE));
-							if (pIn)
-							{
-								CESERVER_REQ* pOut = ExecuteGuiCmd(ghConWnd, pIn, ghConWnd);
-								ExecuteFreeResult(pIn);
-								if (pOut) ExecuteFreeResult(pOut);
-							}
-						}
-
-						ConInfo.CloseMap();
-					}
-					else
-					{
-						_ASSERTE(pInfo->cbSize == sizeof(CESERVER_CONSOLE_MAPPING_HDR));
-					}
-				}
-			}
 
 			//if (!gbSkipInjects && ghConWnd)
 			//{
@@ -2220,7 +2227,7 @@ int WINAPI RequestLocalServer(/*[IN/OUT]*/RequestLocalServerParm* Parm)
 	}
 
 	// Если больше ничего кроме регистрации событий нет
-	if ((Parm->Flags & (slsf_GetFarCommitEvent|slsf_FarCommitForce|slsf_GetCursorEvent)) == Parm->Flags)
+	if ((Parm->Flags & slsf__EventsOnly) == Parm->Flags)
 	{
 		goto DoEvents;
 	}
@@ -2284,10 +2291,7 @@ int WINAPI RequestLocalServer(/*[IN/OUT]*/RequestLocalServerParm* Parm)
 	}
 
 	// Если поток RefreshThread был "заморожен" при запуске другого сервера
-	if (gpSrv->hFreezeRefreshThread)
-	{
-		SetEvent(gpSrv->hFreezeRefreshThread);
-	}
+	ThawRefreshThread();
 
 	TODO("Инициализация TrueColor буфера - Parm->ppAnnotation");
 
@@ -2322,6 +2326,20 @@ DoEvents:
 		_ASSERTE(Parm->hCursorChangeEvent!=NULL);
 
 		gpSrv->bCursorChangeRegistered = TRUE;
+	}
+
+	if (Parm->Flags & slsf_OnFreeConsole)
+	{
+		FreezeRefreshThread();
+	}
+
+	if (Parm->Flags & slsf_OnAllocConsole)
+	{
+		ghConWnd = GetConEmuHWND(2);
+		LoadSrvInfoMap();
+		//TODO: Request AltServer state from MainServer?
+
+		ThawRefreshThread();
 	}
 
 wrap:
@@ -5545,6 +5563,7 @@ static void UndoConsoleWindowZoom()
 	UNREFERENCED_PARAMETER(lbRc);
 }
 
+// TODO: Optimize - combine ReadConsoleData/ReadConsoleInfo
 void static CorrectDBCSCursorPosition(HANDLE ahConOut, CONSOLE_SCREEN_BUFFER_INFO& csbi)
 {
 	if (!gbIsDBCS || csbi.dwSize.X <= 0 || csbi.dwCursorPosition.X <= 0)
@@ -5552,47 +5571,91 @@ void static CorrectDBCSCursorPosition(HANDLE ahConOut, CONSOLE_SCREEN_BUFFER_INF
 
 	// Issue 577: Chinese display error on Chinese
 	// -- GetConsoleScreenBufferInfo возвращает координаты курсора в DBCS, а нам нужен wchar_t !!!
-	DWORD nCP = GetConsoleOutputCP();
-	if ((nCP != CP_UTF8) && (nCP != CP_UTF7))
+	if (IsConsoleDoubleCellCP())
 	{
-		UINT MaxCharSize = 0;
-		if (AreCpInfoLeads(nCP, &MaxCharSize) && (MaxCharSize > 1))
+		WORD Attrs[200];
+		LONG cchMax = countof(Attrs);
+		WORD* pAttrs = (csbi.dwCursorPosition.X <= cchMax) ? Attrs : (WORD*)calloc(csbi.dwCursorPosition.X, sizeof(*pAttrs));
+		if (pAttrs)
+			cchMax = csbi.dwCursorPosition.X;
+		else
+			pAttrs = Attrs; // memory allocation fail? try part of line?
+		COORD crRead = {0, csbi.dwCursorPosition.Y};
+		//120830 - DBCS uses 2 cells per hieroglyph
+		DWORD nRead = 0;
+		// TODO: Optimize
+		if (ReadConsoleOutputAttribute(ahConOut, pAttrs, cchMax, crRead, &nRead) && nRead)
 		{
-			_ASSERTE(MaxCharSize==2);
-			WORD Attrs[200];
-			LONG cchMax = countof(Attrs);
-			WORD* pAttrs = (csbi.dwCursorPosition.X <= cchMax) ? Attrs : (WORD*)calloc(csbi.dwCursorPosition.X, sizeof(*pAttrs));
-			if (pAttrs)
-				cchMax = csbi.dwCursorPosition.X;
-			else
-				pAttrs = Attrs; // memory allocation fail? try part of line?
-			COORD crRead = {0, csbi.dwCursorPosition.Y};
-			//120830 - DBCS uses 2 cells per hieroglyph
-			DWORD nRead = 0;
-			if (ReadConsoleOutputAttribute(ahConOut, pAttrs, cchMax, crRead, &nRead) && nRead)
+			_ASSERTE(nRead==cchMax);
+			int nXShift = 0;
+			LPWORD p = pAttrs, pEnd = pAttrs+nRead;
+			while (p < pEnd)
 			{
-				_ASSERTE(nRead==cchMax);
-				int nXShift = 0;
-				LPWORD p = pAttrs, pEnd = pAttrs+nRead;
-				while (p < pEnd)
+				if ((*p) & COMMON_LVB_LEADING_BYTE)
 				{
-					if ((*p) & COMMON_LVB_LEADING_BYTE)
-					{
-						nXShift++;
-						p++;
-						_ASSERTE((p < pEnd) && ((*p) & COMMON_LVB_TRAILING_BYTE));
-					}
+					nXShift++;
 					p++;
+					_ASSERTE((p < pEnd) && ((*p) & COMMON_LVB_TRAILING_BYTE));
 				}
-				_ASSERTE(nXShift <= csbi.dwCursorPosition.X);
-				csbi.dwCursorPosition.X = max(0,(csbi.dwCursorPosition.X - nXShift));
+				p++;
 			}
-			if (pAttrs && (pAttrs != Attrs))
-			{
-				free(pAttrs);
-			}
+			_ASSERTE(nXShift <= csbi.dwCursorPosition.X);
+			csbi.dwCursorPosition.X = max(0,(csbi.dwCursorPosition.X - nXShift));
+		}
+		if (pAttrs && (pAttrs != Attrs))
+		{
+			free(pAttrs);
 		}
 	}
+}
+
+
+/**
+Reload current console palette, IF it WAS NOT specified explicitly before
+
+@param ahConOut << (HANDLE)ghConOut
+@result true if palette was successfully retrieved
+**/
+bool MyLoadConsolePalette(HANDLE ahConOut, CESERVER_CONSOLE_PALETTE& Palette)
+{
+	bool bRc = false;
+
+	if (gpSrv->ConsolePalette.bPalletteLoaded)
+	{
+		Palette = gpSrv->ConsolePalette;
+		bRc = true;
+	}
+	else
+	{
+		Palette.bPalletteLoaded = false;
+	}
+
+	CONSOLE_SCREEN_BUFFER_INFO sbi = {};
+	MY_CONSOLE_SCREEN_BUFFER_INFOEX sbi_ex = {sizeof(sbi_ex)};
+
+	if (apiGetConsoleScreenBufferInfoEx(ahConOut, &sbi_ex))
+	{
+		Palette.wAttributes = sbi_ex.wAttributes;
+		Palette.wPopupAttributes = sbi_ex.wPopupAttributes;
+
+		if (!bRc)
+		{
+			_ASSERTE(sizeof(Palette.ColorTable) == sizeof(sbi_ex.ColorTable));
+			memmove(Palette.ColorTable, sbi_ex.ColorTable, sizeof(Palette.ColorTable));
+
+			// Store for future use?
+			// -- gpSrv->ConsolePalette = Palette;
+
+			bRc = true;
+		}
+	}
+	else if (GetConsoleScreenBufferInfo(ahConOut, &sbi))
+	{
+		Palette.wAttributes = Palette.wPopupAttributes = sbi.wAttributes;
+		// Load palette from registry?
+	}
+
+	return bRc;
 }
 
 
@@ -5739,13 +5802,13 @@ BOOL MyGetConsoleScreenBufferInfo(HANDLE ahConOut, PCONSOLE_SCREEN_BUFFER_INFO a
 		if (gpSrv->pConsole && gpSrv->TopLeft.isLocked())
 		{
 			// Был видим в той области, которая ушла в GUI
-			if (CoordInSmallRect(gpSrv->pConsole->info.sbi.dwCursorPosition, gpSrv->pConsole->info.sbi.srWindow)
+			if (CoordInSmallRect(gpSrv->pConsole->ConState.sbi.dwCursorPosition, gpSrv->pConsole->ConState.sbi.srWindow)
 				// и видим сейчас в RealConsole
 				&& CoordInSmallRect(csbi.dwCursorPosition, srRealWindow)
 				// но стал НЕ видим в скорректированном (по TopLeft) прямоугольнике
 				&& !CoordInSmallRect(csbi.dwCursorPosition, csbi.srWindow)
 				// И TopLeft в GUI не менялся
-				&& gpSrv->TopLeft.Equal(gpSrv->pConsole->info.TopLeft))
+				&& gpSrv->TopLeft.Equal(gpSrv->pConsole->ConState.TopLeft))
 			{
 				// Сбросить блокировку и вернуть реальное положение в консоли
 				gpSrv->TopLeft.Reset();
@@ -5755,8 +5818,8 @@ BOOL MyGetConsoleScreenBufferInfo(HANDLE ahConOut, PCONSOLE_SCREEN_BUFFER_INFO a
 
 		if (gpSrv->pConsole)
 		{
-			gpSrv->pConsole->info.TopLeft = gpSrv->TopLeft;
-			gpSrv->pConsole->info.srRealWindow = srRealWindow;
+			gpSrv->pConsole->ConState.TopLeft = gpSrv->TopLeft;
+			gpSrv->pConsole->ConState.srRealWindow = srRealWindow;
 		}
 	}
 

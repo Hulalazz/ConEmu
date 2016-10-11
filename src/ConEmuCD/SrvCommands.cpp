@@ -1428,11 +1428,11 @@ BOOL cmd_Pause(CESERVER_REQ& in, CESERVER_REQ** out)
 	switch (cmd)
 	{
 	case CEPause_On:
-		SetConEmuFlags(gpSrv->pConsole->info.Flags, CECI_Paused, CECI_Paused);
+		SetConEmuFlags(gpSrv->pConsole->ConState.Flags, CECI_Paused, CECI_Paused);
 		bOk = apiPauseConsoleOutput(ghConWnd, true);
 		break;
 	case CEPause_Off:
-		SetConEmuFlags(gpSrv->pConsole->info.Flags, CECI_Paused, CECI_None);
+		SetConEmuFlags(gpSrv->pConsole->ConState.Flags, CECI_Paused, CECI_None);
 		bOk = apiPauseConsoleOutput(ghConWnd, false);
 		break;
 	}
@@ -1623,16 +1623,14 @@ BOOL cmd_FreezeAltServer(CESERVER_REQ& in, CESERVER_REQ** out)
 		if (in.dwData[0] == 1)
 		{
 			gpSrv->nPrevAltServer = in.dwData[1];
-			if (!gpSrv->hFreezeRefreshThread)
-				gpSrv->hFreezeRefreshThread = CreateEvent(NULL, TRUE, FALSE, NULL);
-			ResetEvent(gpSrv->hFreezeRefreshThread);
+
+			FreezeRefreshThread();
 		}
 		else
 		{
 			klSwap(nPrevAltServer, gpSrv->nPrevAltServer);
 
-			if (gpSrv->hFreezeRefreshThread)
-				SetEvent(gpSrv->hFreezeRefreshThread);
+			ThawRefreshThread();
 
 			if (gnRunMode == RM_ALTSERVER)
 			{
